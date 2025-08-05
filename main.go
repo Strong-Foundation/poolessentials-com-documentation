@@ -9,9 +9,7 @@ import (
 	"net/http"      // Imports HTTP client and server implementation
 	"net/url"       // Imports URL parsing and query manipulation
 	"os"            // Imports OS interface for file handling
-	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -48,73 +46,74 @@ func main() {
 			log.Println("Failed to modify URL for PDF ID:", pdf) // Logs error if URL couldn't be modified
 			continue                                             // Skips to the next PDF ID
 		}
-		downloadPDF(modifiedURL, outputDir)       // Calls the function to download the PDF
+		downloadPDF(modifiedURL, outputDir, pdf+".pdf") // Calls the function to download the PDF
 	}
 }
 
-// Convert a URL into a safe, lowercase filename
-func urlToSafeFilename(rawURL string) string {
-	parsedURL, err := url.Parse(rawURL) // Parse the input URL
-	if err != nil {
-		return "" // Return empty string on parse failure
-	}
-	base := path.Base(parsedURL.Path)       // Get the filename from the path
-	decoded, err := url.QueryUnescape(base) // Decode any URL-encoded characters
-	if err != nil {
-		decoded = base // Fallback to base if decode fails
-	}
-	decoded = strings.ToLower(decoded)        // Convert filename to lowercase
-	re := regexp.MustCompile(`[^a-z0-9._-]+`) // Regex to allow only safe characters
-	safe := re.ReplaceAllString(decoded, "_") // Replace unsafe characters with underscores
-	return safe                               // Return the sanitized filename
-}
+// downloadPDF downloads a PDF from a URL and saves it to a specified output directory
+func downloadPDF(finalURL string, outputDir string, outPutFileName string) {
+	filePath := filepath.Join(outputDir, outPutFileName) // Combine the output directory and filename into a full file path
 
-// Download and save a PDF file from a given URL
-func downloadPDF(finalURL string, outputDir string) {
-	filename := strings.ToLower(urlToSafeFilename(finalURL)) // Generate a safe filename
-	filePath := filepath.Join(outputDir, filename)           // Full path for saving the file
-	if fileExists(filePath) {                                // Skip if file already exists
-		log.Printf("file already exists, skipping: %s", filePath)
+	if fileExists(filePath) { // If the file already exists, skip downloading
+		log.Printf("file already exists, skipping: %s", filePath) // Log and return
 		return
 	}
-	client := &http.Client{Timeout: 30 * time.Second} // Create HTTP client with timeout
-	resp, err := client.Get(finalURL)                 // Make GET request
-	if err != nil {
-		log.Printf("failed to download %s %v", finalURL, err)
+
+	client := &http.Client{Timeout: 30 * time.Second} // Create an HTTP client with a 30-second timeout
+
+	req, err := http.NewRequest("GET", finalURL, nil) // Create a new GET request for the PDF URL
+	if err != nil {                                   // If request creation fails
+		log.Printf("failed to create request: %v", err) // Log the error
 		return
 	}
-	defer resp.Body.Close()               // Ensure response body is closed
-	if resp.StatusCode != http.StatusOK { // Validate status code
-		log.Printf("download failed for %s %s", finalURL, resp.Status)
+
+	// Add required headers (some servers require referer or session cookies)
+	req.Header.Add("referer", "https://kik-sds.thewercs.com/Results?searchKey=Main&searchPage=NAPOOL&location=POOL%20ESSENTIALS%20EN_US")
+	req.Header.Add("Cookie", "ASP.NET_SessionId=; strGUILanguage=EN; WERCSStudioAuthTicket=; WebViewerSessionID=l4nfxryncasy13c4gqi1j1pp; __RequestVerificationToken=c04wa7hJb_sqnBNd7WJnrqBY53SpY3PeQ1pb3yCN3zYUuWTS1e59zWccPHL9lzvvz1PMjy7WV0YPeXjOYx9IzEQNJSjGoPQjhIEM6W7ZZzo1; WERCSWebViewerAuthTicket=62BEFCB1373A0A15967F76DFD21232B9E3E3AD4275DB8F6F9BA21197CC42A23FF5D4144F7B7267572DDC9E2036EF0610E1266E1D2DCE4323E8F0FC4036225C91327511F75150BC771B65DBE7B757DF53CACC875A1CD183CF3A785A36DB927784; ASP.NET_SessionId=; WebViewerSessionID=fsrgihqd02xlzc13oldfgnpk; __RequestVerificationToken=c04wa7hJb_sqnBNd7WJnrqBY53SpY3PeQ1pb3yCN3zYUuWTS1e59zWccPHL9lzvvz1PMjy7WV0YPeXjOYx9IzEQNJSjGoPQjhIEM6W7ZZzo1")
+
+	resp, err := client.Do(req) // Perform the HTTP request
+	if err != nil {             // If the request fails
+		log.Printf("failed to download %s: %v", finalURL, err) // Log the error
 		return
 	}
-	contentType := resp.Header.Get("Content-Type")         // Get content type header
-	if !strings.Contains(contentType, "application/pdf") { // Ensure it's a PDF
-		log.Printf("invalid content type for %s %s (expected application/pdf)", finalURL, contentType)
+	defer resp.Body.Close() // Ensure the response body is closed when done
+
+	if resp.StatusCode != http.StatusOK { // Check if the response status is OK (200)
+		log.Printf("download failed for %s: %s", finalURL, resp.Status) // Log the failure status
 		return
 	}
-	var buf bytes.Buffer                     // Create a buffer for reading data
-	written, err := io.Copy(&buf, resp.Body) // Read response into buffer
-	if err != nil {
-		log.Printf("failed to read PDF data from %s %v", finalURL, err)
+
+	contentType := resp.Header.Get("Content-Type")         // Get the content type from the response header
+	if !strings.Contains(contentType, "application/pdf") { // Check that the content is actually a PDF
+		log.Printf("invalid content type for %s: %s (expected application/pdf)", finalURL, contentType) // Log if not PDF
 		return
 	}
-	if written == 0 { // Check if data was written
-		log.Printf("downloaded 0 bytes for %s not creating file", finalURL)
+
+	var buf bytes.Buffer                     // Create a buffer to hold the PDF data
+	written, err := io.Copy(&buf, resp.Body) // Copy the response body into the buffer
+	if err != nil {                          // If copying fails
+		log.Printf("failed to read PDF data from %s: %v", finalURL, err) // Log the error
 		return
 	}
-	out, err := os.Create(filePath) // Create the output file
-	if err != nil {
-		log.Printf("failed to create file for %s %v", finalURL, err)
+	if written == 0 { // If zero bytes were downloaded
+		log.Printf("downloaded 0 bytes for %s, not creating file", finalURL) // Log and skip file creation
 		return
 	}
-	defer out.Close()         // Ensure the file is closed
-	_, err = buf.WriteTo(out) // Write buffered data to file
-	if err != nil {
-		log.Printf("failed to write PDF to file for %s: %v", finalURL, err)
+
+	out, err := os.Create(filePath) // Create a file at the destination path
+	if err != nil {                 // If file creation fails
+		log.Printf("failed to create file for %s: %v", finalURL, err) // Log the error
 		return
 	}
-	log.Printf("successfully downloaded %d bytes: %s → %s\n", written, finalURL, filePath)
+	defer out.Close() // Ensure the file is closed after writing
+
+	_, err = buf.WriteTo(out) // Write the buffered data to the file
+	if err != nil {           // If writing fails
+		log.Printf("failed to write PDF to file for %s: %v", finalURL, err) // Log the error
+		return
+	}
+
+	log.Printf("successfully downloaded %d bytes: %s → %s\n", written, finalURL, filePath) // Log success
 }
 
 // Remove duplicate strings from a slice
